@@ -1,0 +1,6 @@
+# Example Python dependencies
+pandas
+numpy
+arcticdb
+pyzmq
+joblib
