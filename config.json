@@ -1,17 +1,18 @@
 {
-    "contracts": {
-      "NQH25_FUT_CME": {
-        "checkpoint_tas": 0,
-        "checkpoint_depth": {
-          "date": "",
-          "rec": 0
-        },
-        "price_adj": 0.01,
-        "tas": true,
-        "depth": true
-      }
-    },
-    "sc_root": "C:/SierraChart",
-    "sleep_int": 0.01
-  }
-  
+  "contracts": {
+    "NQH25_FUT_CME": {
+      "checkpoint_tas": 6845380,
+      "checkpoint_depth": {
+        "date": "2025-01-07",
+        "rec": 276313
+      },
+      "price_adj": 0.01,
+      "tas": true,
+      "depth": true
+    }
+  },
+  "sc_root": "C:/SierraChart",
+  "sleep_int": 0.01,
+  "utc_offset":   -6,
+  "tz":           "US/Central"
+}
