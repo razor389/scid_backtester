@@ -196,12 +196,20 @@ if __name__ == "__main__":
 
     # 2) Build 1-minute time bars, trade-based bars, and volume-based bars
     df_timebars = build_time_bars(df_ticks, freq='1Min')
-    df_tradebars = build_trade_bars(df_ticks, trades_per_bar=100)
-    df_volbars = build_volume_bars(df_ticks, volume_per_bar=1000)
+    df_tradebars = build_trade_bars(df_ticks, trades_per_bar=375)
+    df_volbars = build_volume_bars(df_ticks, volume_per_bar=750)
+
+    # 3) Preview the tail of each bar set
+    print("\n--- Tail of Time Bars ---")
+    print(df_timebars.tail())
+    print("\n--- Tail of Trade-Based Bars ---")
+    print(df_tradebars.tail())
+    print("\n--- Tail of Volume-Based Bars ---")
+    print(df_volbars.tail())
 
     # 3) Store each bar set back to Arctic, under separate suffixes
     store_bars_arctic(symbol, df_timebars, suffix='1min')
-    store_bars_arctic(symbol, df_tradebars, suffix='trade100')
-    store_bars_arctic(symbol, df_volbars, suffix='vol1000')
+    store_bars_arctic(symbol, df_tradebars, suffix='trade375')
+    store_bars_arctic(symbol, df_volbars, suffix='vol750')
 
     print("Done generating and storing sample bars.")
