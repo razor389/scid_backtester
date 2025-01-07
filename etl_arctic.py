@@ -20,12 +20,12 @@ import asyncio
 import time
 import pandas as pd
 
-from json    import loads, dumps
-from os      import walk
-from re      import match
+from json import loads, dumps
+from os   import walk
+from re   import match
 
-# Arctic
-from arcticdb import Arctic, TICK_STORE
+# ArcticDB v2
+from arcticdb import Arctic
 
 # Local modules
 from parsers import (
@@ -39,14 +39,14 @@ CONTRACTS = CONFIG["contracts"]
 SLEEP_INT = CONFIG["sleep_int"]
 SC_ROOT   = CONFIG["sc_root"]
 
-# Arctic setup
-ARCTIC_HOST = "mongodb://localhost:27017" 
+# ArcticDB setup
+ARCTIC_HOST = "mongodb://localhost:27017"
 LIB_NAME    = "tick_data"
 
-# Initialize Arctic library
+# Create/connect to library
 store = Arctic(ARCTIC_HOST)
 if LIB_NAME not in store.list_libraries():
-    store.initialize_library(LIB_NAME, lib_type=TICK_STORE)
+    store.create_library(LIB_NAME)
 arctic_lib = store[LIB_NAME]
 
 ###############
@@ -78,12 +78,14 @@ def _records_to_df_depth(records):
 def write_tas_arctic(symbol_name: str, records: list):
     """
     Write T&S records to Arctic under symbol: symbol_name + "_tas".
+    NOTE: ArcticDB (v2) does not have an 'upsert=True' parameter like old Arctic.
+          This will simply create a new version each time.
     """
     df = _records_to_df_tas(records)
     if not df.empty:
         lib_symbol = f"{symbol_name}_tas"
-        # Append/Upsert in TICK_STORE
-        arctic_lib.write(lib_symbol, df, upsert=True)
+        # This overwrites existing data with a new version
+        arctic_lib.write(lib_symbol, df)
 
 def write_depth_arctic(symbol_name: str, records: list):
     """
@@ -92,7 +94,8 @@ def write_depth_arctic(symbol_name: str, records: list):
     df = _records_to_df_depth(records)
     if not df.empty:
         lib_symbol = f"{symbol_name}_depth"
-        arctic_lib.write(lib_symbol, df, upsert=True)
+        # This overwrites existing data with a new version
+        arctic_lib.write(lib_symbol, df)
 
 ################
 # TIME & SALES
