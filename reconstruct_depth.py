@@ -268,12 +268,19 @@ def main():
         if snapshot_ts is None:
             logger.warning(f"No completed snapshot found before timestamp {target_ts}")
             return
+        
+        # Import timestamp utils
+        from timestamp_utils import ts_to_ds
+
+        # Convert timestamps to readable datetime strings
+        target_time = ts_to_ds(target_ts)
+        snapshot_time = ts_to_ds(snapshot_ts)
 
         # Log the results
         logger.info("\nOrder Book Reconstruction")
         logger.info("-" * 40)
-        logger.info(f"Target TS:     {target_ts}")
-        logger.info(f"Snapshot TS:   {snapshot_ts}")
+        logger.info(f"Target Time:   {target_time} CT")
+        logger.info(f"Snapshot Time: {snapshot_time} CT")
         logger.info(f"Latency (μs):  {target_ts - snapshot_ts}")
         logger.info("\nPrice     Quantity  #Orders")
         logger.info("-" * 30)
