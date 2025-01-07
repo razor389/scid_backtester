@@ -1,10 +1,12 @@
 # Sierra Chart to Arctic ETL
 
+Based on this repo: https://github.com/toobrien/tick_db but writing to ArcticDb (https://github.com/man-group/ArcticDB/) instead of sqlite
+
 This repository shows how to parse Sierra Chart's `.scid` (Time & Sales) and `.depth` (Market Depth) data, then load it **directly** into Arctic (a time-series library on top of MongoDB).
 
 ## 1) Requirements
 
-- **Python** (3.8+ recommended)
+- **Python** (3.8+ recommended, but <=3.11)
 - **MongoDB** (for Arctic)
 - Python packages listed in `requirements.txt`
 
