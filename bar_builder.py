@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-bar_builder.py
+bar_builder.py - Optimized version
 
 1) Read raw tick data (T&S) from ArcticDB (assumes data is stored under "symbol_tas").
-2) Convert Sierra Chart microsecond timestamps -> normal datetimes.
+2) Convert Sierra Chart microsecond timestamps -> Central time datetimes.
 3) Build time-based, trade-based, and volume-based OHLCV bars.
 4) Store each bar set back into ArcticDB under e.g. "symbol_bars_1min", etc.
 """
@@ -12,6 +12,48 @@ import pandas as pd
 import numpy as np
 from arcticdb import Arctic
 from json import loads
+from datetime import time
+import logging
+from logging.handlers import RotatingFileHandler
+import os
+
+############
+# LOGGING
+############
+
+def setup_logging(log_dir="logs"):
+    """Configure logging with both file and console handlers."""
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+
+    logger = logging.getLogger('bar_builder')
+    logger.setLevel(logging.INFO)
+
+    file_formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
+    console_formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s'
+    )
+
+    file_handler = RotatingFileHandler(
+        os.path.join(log_dir, 'bar_builder.log'),
+        maxBytes=10*1024*1024,
+        backupCount=5
+    )
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(file_formatter)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(console_formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    return logger
+
+logger = setup_logging()
 
 ############
 # CONFIG
@@ -20,196 +62,240 @@ from json import loads
 ARCTIC_HOST = "mongodb://localhost:27017"
 LIB_NAME    = "tick_data"
 
-# Read your local config.json to get the UTC offset, etc.
-CONFIG = loads(open("./config.json").read())
-UTC_OFFSET_US = int(CONFIG["utc_offset"] * 3.6e9)  # e.g. offset in microseconds
+try:
+    CONFIG = loads(open("./config.json").read())
+    UTC_OFFSET_US = int(CONFIG["utc_offset"] * 3.6e9)
+    SESSION_START = time.fromisoformat(CONFIG.get("session_start", "08:30:00"))
+    SESSION_END = time.fromisoformat(CONFIG.get("session_end", "14:59:59"))
+    NEW_BAR_AT_SESSION_START = CONFIG.get("new_bar_at_session_start", True)
+except Exception as e:
+    logger.error(f"Failed to load config: {str(e)}")
+    raise
 
 ############
 # ARCTIC
 ############
 
-store = Arctic(ARCTIC_HOST)
-arctic_lib = store[LIB_NAME]
+try:
+    store = Arctic(ARCTIC_HOST)
+    arctic_lib = store[LIB_NAME]
+    logger.info("Successfully connected to ArcticDB")
+except Exception as e:
+    logger.error(f"Failed to connect to ArcticDB: {str(e)}")
+    raise
 
 ############
 # FUNCTIONS
 ############
 
 def get_tick_data(symbol: str) -> pd.DataFrame:
-    """
-    Load tick data (T&S) from ArcticDB under symbol + '_tas'.
-    Then convert Sierra Chart timestamps into a normal DateTime index.
-    Returns a DataFrame with columns: [timestamp, price, qty, side, ...] + DatetimeIndex.
-    """
+    """Optimized tick data loading with vectorized timestamp conversion."""
     lib_symbol = f"{symbol}_tas"
-    df = arctic_lib.read(lib_symbol).data
+    logger.info(f"Loading tick data for {lib_symbol}")
+    
+    try:
+        df = arctic_lib.read(lib_symbol).data
+        
+        # Vectorized timestamp conversion
+        df["datetime"] = (
+            np.datetime64("1899-12-30")
+            + np.timedelta64(UTC_OFFSET_US, "us")
+            + df["timestamp"].astype("timedelta64[us]")
+        ).astype("datetime64[ns]")
 
-    # Convert Sierra Chart microsecond timestamps -> normal datetimes
-    # SC epoch is 1899-12-30, plus your local UTC offset, plus the microseconds in 'timestamp'.
-    df["datetime"] = (
-        np.datetime64("1899-12-30")
-        + np.timedelta64(UTC_OFFSET_US, "us")
-        + df["timestamp"].values.astype("timedelta64[us]")
-    ).astype("datetime64[ns]")  # or datetime64[us] if you prefer microsecond resolution
+        df.set_index("datetime", inplace=True, drop=True)
+        
+        logger.info(f"Successfully loaded {len(df)} ticks for {symbol}")
+        return df
+        
+    except Exception as e:
+        logger.error(f"Failed to load tick data for {lib_symbol}: {str(e)}")
+        raise
 
-    # Set 'datetime' as the DateTime index
-    df.set_index("datetime", inplace=True, drop=True)
-
-    return df
-
+def filter_session_hours(df: pd.DataFrame) -> pd.DataFrame:
+    """Vectorized session hours filtering."""
+    mask = (
+        (df.index.time >= SESSION_START) &
+        (df.index.time <= SESSION_END)
+    )
+    filtered_df = df[mask]
+    logger.debug(f"Filtered {len(df)} rows to {len(filtered_df)} rows within session hours")
+    return filtered_df
 
 def build_time_bars(df: pd.DataFrame, freq: str = '1Min') -> pd.DataFrame:
-    """
-    Resample T&S data into time-based bars at frequency `freq`.
-    freq examples: '1Min', '5Min', '1H', etc.
-
-    For each bar:
-      - open: first trade price
-      - high: max trade price
-      - low:  min trade price
-      - close: last trade price
-      - volume: sum of all quantities in that window
-    """
-    # Ensure DF has a DatetimeIndex for resampling
-    ohlcv = df.resample(freq).agg({
+    """Optimized time-based bar building using pure pandas operations."""
+    logger.info(f"Building {freq} time bars")
+    
+    df = filter_session_hours(df)
+    
+    if NEW_BAR_AT_SESSION_START:
+        # Handle session boundaries efficiently using groupby
+        grouped = df.groupby(pd.Grouper(freq=freq, offset=pd.Timedelta(
+            hours=SESSION_START.hour,
+            minutes=SESSION_START.minute,
+            seconds=SESSION_START.second
+        )))
+    else:
+        grouped = df.groupby(pd.Grouper(freq=freq))
+    
+    # Vectorized aggregation
+    ohlcv = grouped.agg({
         'price': ['first', 'max', 'min', 'last'],
         'qty': 'sum'
     })
+    
     ohlcv.columns = ['open', 'high', 'low', 'close', 'volume']
-    # Drop bars that have no trades
     ohlcv.dropna(subset=['open'], inplace=True)
+    
+    logger.info(f"Generated {len(ohlcv)} {freq} bars")
     return ohlcv
-
 
 def build_trade_bars(df: pd.DataFrame, trades_per_bar: int = 100) -> pd.DataFrame:
-    """
-    Build bars every N trades. We'll accumulate trades until we hit `trades_per_bar`.
-    Then output an OHLCV bar and start again.
-
-    For each bar:
-      - open: price of first trade in the group
-      - high: max price in the group
-      - low:  min price in the group
-      - close: price of last trade
-      - volume: sum of all qty in the group
-    """
-    # Sort by timestamp in case it's not sorted
-    df = df.sort_values('timestamp').reset_index(drop=True)
-
-    # Create a 'bar_id' by integer division of row index
-    df['bar_id'] = df.index // trades_per_bar
-
-    grouped = df.groupby('bar_id')
-    ohlcv = grouped.agg(
-        open=('price', 'first'),
-        high=('price', 'max'),
-        low=('price', 'min'),
-        close=('price', 'last'),
-        volume=('qty', 'sum'),
-        bar_time_first=('timestamp', 'first'),
-        bar_time_last=('timestamp', 'last'),
-    )
-
-    # Optional: set the final bar timestamp to bar_time_last, etc.
-    ohlcv.index.name = None
-    ohlcv.reset_index(drop=True, inplace=True)
+    """Optimized trade-based bar building using numpy operations."""
+    logger.info(f"Building trade bars with {trades_per_bar} trades per bar")
+    
+    df = filter_session_hours(df)
+    df = df.sort_index()
+    
+    # Create bar IDs using integer division
+    n_trades = len(df)
+    base_bar_ids = np.arange(n_trades) // trades_per_bar
+    
+    if NEW_BAR_AT_SESSION_START:
+        # Find session starts
+        session_starts = df.index.time == SESSION_START
+        # Increment bar IDs after session starts
+        bar_ids = base_bar_ids + np.cumsum(session_starts)
+    else:
+        bar_ids = base_bar_ids
+    
+    # Group and aggregate
+    grouped = df.groupby(bar_ids)
+    prices = grouped['price']
+    volumes = grouped['qty']
+    times = grouped.apply(lambda x: pd.Series({
+        'bar_time_first': x.index[0],
+        'bar_time_last': x.index[-1]
+    }))
+    
+    # Combine results
+    ohlcv = pd.DataFrame({
+        'open': prices.first(),
+        'high': prices.max(),
+        'low': prices.min(),
+        'close': prices.last(),
+        'volume': volumes.sum(),
+        'bar_time_first': times['bar_time_first'],
+        'bar_time_last': times['bar_time_last']
+    })
+    
+    logger.info(f"Generated {len(ohlcv)} trade bars")
     return ohlcv
-
 
 def build_volume_bars(df: pd.DataFrame, volume_per_bar: int = 1000) -> pd.DataFrame:
-    """
-    Build bars every N total volume. Accumulate trades until total qty >= volume_per_bar.
-    Then start a new bar.
-
-    For each bar:
-      - open: first trade price in that bar
-      - high: max trade price
-      - low:  min trade price
-      - close: last trade price
-      - volume: sum of traded qty in that bar
-    """
-    df = df.sort_values('timestamp').reset_index(drop=True)
-
-    bars = []
-    bar_open = bar_high = bar_low = bar_close = None
-    bar_volume = 0
-    bar_start_ts = bar_end_ts = None
-
-    for idx, row in df.iterrows():
-        price = row['price']
-        qty   = row['qty']
-        tstamp = row['timestamp']
-
-        # Start a new bar if needed
-        if bar_open is None:
-            bar_open = bar_high = bar_low = bar_close = price
-            bar_start_ts = tstamp
-            bar_volume = 0
-
-        # Update bar stats
-        bar_close = price
-        bar_high = max(bar_high, price)
-        bar_low = min(bar_low, price)
-        bar_volume += qty
-        bar_end_ts = tstamp
-
-        # If we hit or exceed the volume threshold, close out this bar
-        if bar_volume >= volume_per_bar:
-            bars.append({
-                'open': bar_open,
-                'high': bar_high,
-                'low': bar_low,
-                'close': bar_close,
-                'volume': bar_volume,
-                'bar_time_first': bar_start_ts,
-                'bar_time_last': bar_end_ts,
-            })
-            # Reset for next bar
-            bar_open = bar_high = bar_low = bar_close = None
-            bar_volume = 0
-
-    # Convert to DataFrame
-    ohlcv = pd.DataFrame(bars)
+    """Optimized volume-based bar building using numpy operations."""
+    logger.info(f"Building volume bars with {volume_per_bar} volume per bar")
+    
+    df = filter_session_hours(df)
+    df = df.sort_index()
+    
+    # Calculate cumulative volume
+    cumulative_volume = df['qty'].cumsum()
+    
+    # Create base bar IDs using volume threshold
+    base_bar_ids = cumulative_volume // volume_per_bar
+    
+    if NEW_BAR_AT_SESSION_START:
+        # Find session starts
+        session_starts = df.index.time == SESSION_START
+        # Increment bar IDs after session starts
+        bar_ids = base_bar_ids + np.cumsum(session_starts)
+    else:
+        bar_ids = base_bar_ids
+    
+    # Group and aggregate
+    grouped = df.groupby(bar_ids)
+    prices = grouped['price']
+    volumes = grouped['qty']
+    times = grouped.apply(lambda x: pd.Series({
+        'bar_time_first': x.index[0],
+        'bar_time_last': x.index[-1]
+    }))
+    
+    # Combine results
+    ohlcv = pd.DataFrame({
+        'open': prices.first(),
+        'high': prices.max(),
+        'low': prices.min(),
+        'close': prices.last(),
+        'volume': volumes.sum(),
+        'bar_time_first': times['bar_time_first'],
+        'bar_time_last': times['bar_time_last']
+    })
+    
+    logger.info(f"Generated {len(ohlcv)} volume bars")
     return ohlcv
 
-
 def store_bars_arctic(symbol: str, df_bars: pd.DataFrame, suffix: str):
-    """
-    Store OHLCV bars back to Arctic under a new symbol name
-    (e.g. "symbol_bars_suffix").
-    """
+    """Store OHLCV bars in Arctic."""
     lib_symbol = f"{symbol}_bars_{suffix}"
-    arctic_lib.write(lib_symbol, df_bars)
-    print(f"Stored bar data to Arctic: {lib_symbol}")
-
+    try:
+        arctic_lib.write(lib_symbol, df_bars)
+        logger.info(f"Successfully stored {len(df_bars)} bars to Arctic: {lib_symbol}")
+    except Exception as e:
+        logger.error(f"Failed to store bars to Arctic {lib_symbol}: {str(e)}")
+        raise
 
 ############
 # MAIN
 ############
 
+def display_bars(df: pd.DataFrame, bar_type: str):
+    """Display head and tail of bars with proper formatting."""
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
+    pd.set_option('display.float_format', lambda x: '%.2f' % x)
+    
+    print(f"\n{'='*50}")
+    print(f"{bar_type} Bars Preview")
+    print('='*50)
+    print("\nFirst 5 bars:")
+    print(df.head())
+    print("\nLast 5 bars:")
+    print(df.tail())
+    print(f"\nTotal {bar_type} bars: {len(df)}")
+    print(f"Date range: {df.index[0]} to {df.index[-1]}")
+
 if __name__ == "__main__":
-    # Example usage
-    symbol = "NQH25_FUT_CME"
+    try:
+        symbol = "NQH25_FUT_CME"
+        logger.info(f"Starting bar generation for {symbol}")
 
-    # 1) Load T&S data and convert microsecond timestamps to normal datetime index
-    df_ticks = get_tick_data(symbol)
+        df_ticks = get_tick_data(symbol)
+        
+        # Build and display time bars
+        df_timebars = build_time_bars(df_ticks, freq='1Min')
+        display_bars(df_timebars, "Time (1-minute)")
+        
+        # Build and display trade bars
+        df_tradebars = build_trade_bars(df_ticks, trades_per_bar=375)
+        display_bars(df_tradebars, "Trade (375)")
+        
+        # Build and display volume bars
+        df_volbars = build_volume_bars(df_ticks, volume_per_bar=750)
+        display_bars(df_volbars, "Volume (750)")
 
-    # 2) Build 1-minute time bars, trade-based bars, and volume-based bars
-    df_timebars = build_time_bars(df_ticks, freq='1Min')
-    df_tradebars = build_trade_bars(df_ticks, trades_per_bar=375)
-    df_volbars = build_volume_bars(df_ticks, volume_per_bar=750)
+        logger.info("\n=== Bar Statistics ===")
+        logger.info(f"Time bars: {len(df_timebars)} bars generated")
+        logger.info(f"Trade bars: {len(df_tradebars)} bars generated")
+        logger.info(f"Volume bars: {len(df_volbars)} bars generated")
 
-    # 3) Preview the tail of each bar set
-    print("\n--- Tail of Time Bars ---")
-    print(df_timebars.tail())
-    print("\n--- Tail of Trade-Based Bars ---")
-    print(df_tradebars.tail())
-    print("\n--- Tail of Volume-Based Bars ---")
-    print(df_volbars.tail())
+        store_bars_arctic(symbol, df_timebars, suffix='1min')
+        store_bars_arctic(symbol, df_tradebars, suffix='trade375')
+        store_bars_arctic(symbol, df_volbars, suffix='vol750')
 
-    # 3) Store each bar set back to Arctic, under separate suffixes
-    store_bars_arctic(symbol, df_timebars, suffix='1min')
-    store_bars_arctic(symbol, df_tradebars, suffix='trade375')
-    store_bars_arctic(symbol, df_volbars, suffix='vol750')
-
-    print("Done generating and storing sample bars.")
+        logger.info("Successfully completed bar generation and storage")
+        
+    except Exception as e:
+        logger.error(f"Failed to complete bar generation: {str(e)}")
+        raise
