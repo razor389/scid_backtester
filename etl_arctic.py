@@ -25,7 +25,7 @@ from os      import walk
 from re      import match
 
 # Arctic
-from arctic import Arctic, TICK_STORE
+from arcticdb import Arctic, TICK_STORE
 
 # Local modules
 from parsers import (
@@ -40,7 +40,7 @@ SLEEP_INT = CONFIG["sleep_int"]
 SC_ROOT   = CONFIG["sc_root"]
 
 # Arctic setup
-ARCTIC_HOST = "localhost"  # or "mongodb://your_user:your_pass@hostname"
+ARCTIC_HOST = "mongodb://localhost:27017" 
 LIB_NAME    = "tick_data"
 
 # Initialize Arctic library

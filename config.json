@@ -1,6 +1,6 @@
 {
     "contracts": {
-      "ESU22_FUT_CME": {
+      "NQH25_FUT_CME": {
         "checkpoint_tas": 0,
         "checkpoint_depth": {
           "date": "",
@@ -11,7 +11,7 @@
         "depth": true
       }
     },
-    "sc_root": "/Volumes/[C] Windows 10/SierraChart",
+    "sc_root": "C:/SierraChart",
     "sleep_int": 0.01
   }
   
