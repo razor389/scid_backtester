@@ -66,7 +66,7 @@ try:
     CONFIG = loads(open("./config.json").read())
     UTC_OFFSET_US = int(CONFIG["utc_offset"] * 3.6e9)
     SESSION_START = time.fromisoformat(CONFIG.get("session_start", "08:30:00"))
-    SESSION_END = time.fromisoformat(CONFIG.get("session_end", "14:59:59"))
+    SESSION_END = time.fromisoformat(CONFIG.get("session_end", "15:00:00"))
     NEW_BAR_AT_SESSION_START = CONFIG.get("new_bar_at_session_start", True)
 except Exception as e:
     logger.error(f"Failed to load config: {str(e)}")
